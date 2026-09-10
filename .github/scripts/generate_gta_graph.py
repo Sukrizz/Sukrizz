@@ -1,6 +1,8 @@
 import os
 import json
 import urllib.request
+import math
+import random
 
 USERNAME = os.environ.get("GITHUB_ACTOR", "Sukrizz")
 TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -42,7 +44,6 @@ def fetch_contributions_graphql(username, token):
     return result["data"]["user"]["contributionsCollection"]["contributionCalendar"]
 
 def fetch_contributions_html(username):
-    # Fallback when no token is present (e.g. local testing)
     url = f"https://github.com/users/{username}/contributions"
     import re
     try:
@@ -87,7 +88,7 @@ def get_levels_from_data(calendar_data):
     for week in weeks:
         padded_week = [None] * 7
         for day in week["contributionDays"]:
-            weekday = day["weekday"] # 0 for Sunday
+            weekday = day["weekday"]
             count = day["contributionCount"]
             
             level = 0
@@ -103,6 +104,46 @@ def get_levels_from_data(calendar_data):
             levels.append(day_level if day_level is not None else 0)
             
     return levels
+
+def make_boom(x, y, level, t_start, total_dur):
+    boom_dur = 0.4
+    
+    kf1 = 0.0001
+    kf_end = boom_dur / total_dur
+    kf_off = kf_end + 0.0001
+    
+    if kf_off > 1.0:
+        kf_off = 1.0
+        kf_end = 0.9999
+        
+    group_anim = f'<animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />'
+    
+    elements = []
+    
+    if level == 0:
+        elements.append(f'<circle cx="0" cy="0" r="1.5" fill="#444444" />')
+        elements.append(f'<animateTransform attributeName="transform" type="scale" values="0; 1.2; 1.2; 0; 0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />')
+    elif level == 1:
+        elements.append(f'<circle cx="0" cy="0" r="3" fill="#aaaaaa" />')
+        elements.append(f'<animateTransform attributeName="transform" type="scale" values="0; 1.5; 1.5; 0; 0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />')
+    elif level == 2:
+        elements.append(f'<path d="M-6,0 L0,-6 L6,0 L0,6 Z" fill="#ffaa00" />')
+        elements.append(f'<animateTransform attributeName="transform" type="scale" values="0; 2; 2; 0; 0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />')
+    elif level == 3:
+        elements.append(f'<circle cx="0" cy="0" r="5" fill="#ff5500" />')
+        elements.append(f'<circle cx="-8" cy="-8" r="2" fill="#ffaa00" />')
+        elements.append(f'<circle cx="8" cy="8" r="2" fill="#ffaa00" />')
+        elements.append(f'<circle cx="-8" cy="8" r="2" fill="#ffaa00" />')
+        elements.append(f'<circle cx="8" cy="-8" r="2" fill="#ffaa00" />')
+        elements.append(f'<animateTransform attributeName="transform" type="scale" values="0; 2.5; 2.5; 0; 0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />')
+    elif level >= 4:
+        elements.append(f'<path d="M-10,0 L0,-10 L10,0 L0,10 Z" fill="#ff0000" />')
+        elements.append(f'<path d="M-8,-8 L8,8 M-8,8 L8,-8" stroke="#ffaa00" stroke-width="2" />')
+        elements.append(f'<text x="0" y="3" font-family="monospace" font-size="8" font-weight="bold" fill="#ffffff" text-anchor="middle">BOOM</text>')
+        elements.append(f'<animateTransform attributeName="transform" type="scale" values="0; 1.5; 1.5; 0; 0" keyTimes="0;{kf1:.6f};{kf_end:.6f};{kf_off:.6f};1" begin="{t_start:.3f}s" dur="{total_dur:.3f}s" repeatCount="indefinite" />')
+
+    g_content = "".join(elements)
+    return f'<g transform="translate({x}, {y})"><g opacity="0">{group_anim}{g_content}</g></g>'
 
 def generate_svg(levels):
     weeks = len(levels) // 7
@@ -124,12 +165,76 @@ def generate_svg(levels):
         4: "#ffffff"
     }
 
+    # Points for tracking car movement
+    points = []
+    
+    grid_width = weeks * (cell_size + cell_gap)
+    offset_x = (svg_width - grid_width) / 2
+    if offset_x < padding_x:
+        offset_x = padding_x
+
+    road_y = 35
+    road_height = 14
+    start_y = road_y + road_height + 20
+
+    for i, level in enumerate(levels):
+        week = i // 7
+        day = i % 7
+        x = offset_x + week * (cell_size + cell_gap) + cell_size / 2
+        y = start_y + day * (cell_size + cell_gap) + cell_size / 2
+        points.append((x, y, level))
+
+    time_per_cell = 0.3
+    time_jump = 0.1
+    time_ret = 1.0
+    
+    total_time = 0.0
+    timings = [0.0]
+    
+    for i in range(1, len(points)):
+        week = i // 7
+        prev_week = (i - 1) // 7
+        if week != prev_week:
+            total_time += time_jump
+        else:
+            total_time += time_per_cell
+        timings.append(total_time)
+        
+    total_time += time_ret # For return to start
+    
+    # Generate CSS keyframes for the car
+    car_keyframes = []
+    for i in range(len(points) - 1):
+        p_curr = points[i]
+        p_next = points[i+1]
+        
+        x_curr, y_curr = p_curr[0], p_curr[1]
+        x_next, y_next = p_next[0], p_next[1]
+        
+        dx = x_next - x_curr
+        dy = y_next - y_curr
+        rot = math.degrees(math.atan2(dy, dx))
+        
+        kf_start = (timings[i] / total_time) * 100
+        kf_end = (timings[i+1] / total_time) * 100
+        
+        car_keyframes.append(f"  {kf_start:.3f}% {{ transform: translate({x_curr:.1f}px, {y_curr:.1f}px) rotate({rot:.1f}deg); }}")
+        car_keyframes.append(f"  {kf_end - 0.001:.3f}% {{ transform: translate({x_next:.1f}px, {y_next:.1f}px) rotate({rot:.1f}deg); }}")
+
+    dx_ret = points[0][0] - points[-1][0]
+    dy_ret = points[0][1] - points[-1][1]
+    rot_ret = math.degrees(math.atan2(dy_ret, dx_ret))
+    
+    kf_start_ret = (timings[-1] / total_time) * 100
+    car_keyframes.append(f"  {kf_start_ret:.3f}% {{ transform: translate({points[-1][0]:.1f}px, {points[-1][1]:.1f}px) rotate({rot_ret:.1f}deg); }}")
+    car_keyframes.append(f"  100% {{ transform: translate({points[0][0]:.1f}px, {points[0][1]:.1f}px) rotate({rot_ret:.1f}deg); }}")
+
     svg_elements = []
     svg_elements.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {svg_width} {svg_height}" width="100%">')
     svg_elements.append('<style>')
     svg_elements.append('  .bg { fill: #050505; }')
-    svg_elements.append('  .car { animation: drive 12s linear infinite; }')
-    svg_elements.append(f'  @keyframes drive {{ 0% {{ transform: translateX(-60px); }} 100% {{ transform: translateX({svg_width + 60}px); }} }}')
+    svg_elements.append(f'  .car {{ animation: drive {total_time:.3f}s linear infinite; }}')
+    svg_elements.append(f'  @keyframes drive {{\n' + '\n'.join(car_keyframes) + '\n  }}')
     svg_elements.append('  .window { animation: flicker 4s infinite alternate; }')
     svg_elements.append('  @keyframes flicker { 0% { opacity: 0.7; } 100% { opacity: 1; } }')
     svg_elements.append('  .text { fill: #ffffff; font-family: "Courier New", Courier, monospace; font-size: 14px; font-weight: bold; letter-spacing: 2px; }')
@@ -138,40 +243,12 @@ def generate_svg(levels):
     svg_elements.append(f'<rect class="bg" width="{svg_width}" height="{svg_height}" rx="8" />')
     svg_elements.append(f'<text x="{padding_x}" y="25" class="text">NIGHT SHIFT // DEV</text>')
 
-    road_y = 35
-    road_height = 14
-    svg_elements.append(f'<rect x="0" y="{road_y}" width="{svg_width}" height="{road_height}" fill="#1a1a1a" />')
-    svg_elements.append(f'<rect x="0" y="{road_y}" width="{svg_width}" height="1" fill="#333333" />')
-    svg_elements.append(f'<rect x="0" y="{road_y + road_height - 1}" width="{svg_width}" height="1" fill="#333333" />')
-    
-    for wx in range(0, svg_width, 30):
-        svg_elements.append(f'<rect x="{wx}" y="{road_y + (road_height/2) - 1}" width="15" height="2" fill="#555555" />')
-
-    car_y = road_y + 3
-    svg_elements.append(f'<g class="car" transform="translate(0, {car_y})">')
-    svg_elements.append('<rect x="0" y="0" width="20" height="8" fill="#eeeeee" rx="2" />')
-    svg_elements.append('<rect x="13" y="1" width="3" height="6" fill="#000000" />')
-    svg_elements.append('<rect x="2" y="1" width="3" height="6" fill="#000000" />')
-    svg_elements.append('<rect x="18" y="0" width="2" height="2" fill="#ffffff" />')
-    svg_elements.append('<rect x="18" y="6" width="2" height="2" fill="#ffffff" />')
-    svg_elements.append('<rect x="0" y="0" width="1" height="2" fill="#555555" />')
-    svg_elements.append('<rect x="0" y="6" width="1" height="2" fill="#555555" />')
-    svg_elements.append('<polygon points="20,1 45,-6 45,4" fill="#ffffff" opacity="0.15" />')
-    svg_elements.append('<polygon points="20,7 45,4 45,14" fill="#ffffff" opacity="0.15" />')
-    svg_elements.append('</g>')
-
-    grid_width = weeks * (cell_size + cell_gap)
-    offset_x = (svg_width - grid_width) / 2
-    if offset_x < padding_x:
-        offset_x = padding_x
-
-    start_y = road_y + road_height + 20
-
-    for i, level in enumerate(levels):
-        week = i // 7
-        day = i % 7
-        x = offset_x + week * (cell_size + cell_gap)
-        y = start_y + day * (cell_size + cell_gap)
+    # Draw grid
+    for i, p in enumerate(points):
+        x_c, y_c, level = p
+        # Get top-left
+        x = x_c - cell_size / 2
+        y = y_c - cell_size / 2
         color = colors.get(level, "#141414")
         
         if level > 0:
@@ -183,6 +260,29 @@ def generate_svg(levels):
             svg_elements.append(f'<rect class="window" x="{wx}" y="{wy}" width="{window_size}" height="{window_size}" fill="{window_color}" rx="1"/>')
         else:
             svg_elements.append(f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" fill="{color}" rx="2" />')
+
+    # Add explosions
+    for i, p in enumerate(points):
+        x_c, y_c, level = p
+        t_start = timings[i]
+        boom_svg = make_boom(x_c, y_c, level, t_start, total_time)
+        svg_elements.append(boom_svg)
+
+    # Car definition facing right (0 degrees)
+    car_svg = """
+    <g class="car">
+      <rect x="-10" y="-4" width="20" height="8" fill="#eeeeee" rx="2" />
+      <rect x="3" y="-3" width="3" height="6" fill="#000000" />
+      <rect x="-8" y="-3" width="3" height="6" fill="#000000" />
+      <rect x="8" y="-4" width="2" height="2" fill="#ffffff" />
+      <rect x="8" y="2" width="2" height="2" fill="#ffffff" />
+      <rect x="-10" y="-4" width="1" height="2" fill="#ff0000" />
+      <rect x="-10" y="2" width="1" height="2" fill="#ff0000" />
+      <polygon points="10,-3 35,-10 35,-1" fill="#ffffff" opacity="0.15" />
+      <polygon points="10,3 35,1 35,10" fill="#ffffff" opacity="0.15" />
+    </g>
+    """
+    svg_elements.append(car_svg)
 
     svg_elements.append('</svg>')
     return "\n".join(svg_elements)
