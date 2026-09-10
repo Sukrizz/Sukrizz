@@ -30,4 +30,3 @@ I am a developer focused on artificial intelligence, machine learning, and build
 → Build real projects  
 → Improve DSA  
 → Get stronger at AI/ML  
-→ Become job-ready
