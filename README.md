@@ -1,4 +1,4 @@
-# SUKRIT CHAKRAVARTY.
+# SUKRIT CHAKRAVARTY
 Second-year Computer Science Engineering student specializing in AI/ML.
 
 <img src="./assets/developer.svg" width="120" alt="Developer Terminal" align="right">
