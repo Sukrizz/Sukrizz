@@ -30,8 +30,4 @@ I am a developer focused on artificial intelligence, machine learning, and build
 → Build real projects  
 → Improve DSA  
 → Get stronger at AI/ML  
-→ Become job-ready  
-
-### CONTACT
-[Portfolio](#) · [LinkedIn](#) · [Email](mailto:youremail@example.com) · [GitHub Projects](https://github.com/Sukrizz?tab=repositories)
-
+→ Become job-ready
