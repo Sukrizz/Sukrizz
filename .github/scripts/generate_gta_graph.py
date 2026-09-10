@@ -2,7 +2,6 @@ import os
 import json
 import urllib.request
 import math
-import random
 
 USERNAME = os.environ.get("GITHUB_ACTOR", "Sukrizz")
 TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -83,8 +82,6 @@ def get_levels_from_data(calendar_data):
         
         thresholds = [t1, t2, t3, max(t3 + 1, all_counts[-1])]
     
-    print(f"Calculated thresholds: >0, >={thresholds[0]}, >={thresholds[1]}, >={thresholds[2]}")
-
     for week in weeks:
         padded_week = [None] * 7
         for day in week["contributionDays"]:
@@ -165,9 +162,6 @@ def generate_svg(levels):
         4: "#ffffff"
     }
 
-    # Points for tracking car movement
-    points = []
-    
     grid_width = weeks * (cell_size + cell_gap)
     offset_x = (svg_width - grid_width) / 2
     if offset_x < padding_x:
@@ -177,63 +171,109 @@ def generate_svg(levels):
     road_height = 14
     start_y = road_y + road_height + 20
 
+    # 1. Precalculate all valid cell coordinates in their logical 2D grid
+    cells = []
     for i, level in enumerate(levels):
         week = i // 7
         day = i % 7
         x = offset_x + week * (cell_size + cell_gap) + cell_size / 2
         y = start_y + day * (cell_size + cell_gap) + cell_size / 2
-        points.append((x, y, level))
+        cells.append({'x': x, 'y': y, 'level': level, 'index': i})
 
-    time_per_cell = 0.3
-    time_jump = 0.1
-    time_ret = 1.0
+    # 2. Build the serpentine / snake path
+    points = []
+    for row in range(7):
+        if row % 2 == 0:
+            cols = range(weeks)
+        else:
+            cols = range(weeks - 1, -1, -1)
+            
+        for col in cols:
+            index = col * 7 + row
+            if index < len(cells):
+                points.append(cells[index])
+
+    # 3. Calculate distance and timing
+    time_per_px = 0.3 / (cell_size + cell_gap) # approx 0.3s per cell
     
-    total_time = 0.0
     timings = [0.0]
+    total_time = 0.0
     
     for i in range(1, len(points)):
-        week = i // 7
-        prev_week = (i - 1) // 7
-        if week != prev_week:
-            total_time += time_jump
-        else:
-            total_time += time_per_cell
+        p1 = points[i-1]
+        p2 = points[i]
+        dist = math.hypot(p2['x'] - p1['x'], p2['y'] - p1['y'])
+        total_time += dist * time_per_px
         timings.append(total_time)
         
-    total_time += time_ret # For return to start
+    last_p = points[-1]
+    first_p = points[0]
     
+    # Exit animation (continue right if row 6, which is even, so going right)
+    x_exit = last_p['x'] + 60
+    y_exit = last_p['y']
+    dist_exit = 60
+    total_time += dist_exit * time_per_px
+    time_exit = total_time
+    
+    # Pause out of sight
+    total_time += 1.0
+    time_pause_end = total_time
+    
+    # Entry animation (start from left to enter row 0)
+    x_entry = first_p['x'] - 60
+    y_entry = first_p['y']
+    dist_entry = 60
+    total_time += dist_entry * time_per_px
+    time_loop_end = total_time
+    
+    total_loop_time = total_time
+
     # Generate CSS keyframes for the car
     car_keyframes = []
-    for i in range(len(points) - 1):
-        p_curr = points[i]
-        p_next = points[i+1]
-        
-        x_curr, y_curr = p_curr[0], p_curr[1]
-        x_next, y_next = p_next[0], p_next[1]
-        
-        dx = x_next - x_curr
-        dy = y_next - y_curr
-        rot = math.degrees(math.atan2(dy, dx))
-        
-        kf_start = (timings[i] / total_time) * 100
-        kf_end = (timings[i+1] / total_time) * 100
-        
-        car_keyframes.append(f"  {kf_start:.3f}% {{ transform: translate({x_curr:.1f}px, {y_curr:.1f}px) rotate({rot:.1f}deg); }}")
-        car_keyframes.append(f"  {kf_end - 0.001:.3f}% {{ transform: translate({x_next:.1f}px, {y_next:.1f}px) rotate({rot:.1f}deg); }}")
+    def add_kf(percent, x, y, rot, opacity):
+        car_keyframes.append(f"  {percent:.3f}% {{ transform: translate({x:.1f}px, {y:.1f}px) rotate({rot:.1f}deg); opacity: {opacity}; }}")
 
-    dx_ret = points[0][0] - points[-1][0]
-    dy_ret = points[0][1] - points[-1][1]
-    rot_ret = math.degrees(math.atan2(dy_ret, dx_ret))
+    # Initial frame
+    add_kf(0.0, first_p['x'], first_p['y'], 0.0, 1)
+
+    for i in range(1, len(points)):
+        p_prev = points[i-1]
+        p = points[i]
+        percent = (timings[i] / total_loop_time) * 100
+        
+        dx = p['x'] - p_prev['x']
+        dy = p['y'] - p_prev['y']
+        
+        rot = 0
+        if dx > 0: rot = 0
+        elif dx < 0: rot = 180
+        elif dy > 0: rot = 90
+        
+        # Snap rotation just after leaving the previous cell to face movement direction
+        percent_prev = (timings[i-1] / total_loop_time) * 100
+        add_kf(percent_prev + 0.001, p_prev['x'], p_prev['y'], rot, 1)
+        
+        add_kf(percent, p['x'], p['y'], rot, 1)
+
+    # Fade out and drive to exit
+    percent_exit = (time_exit / total_loop_time) * 100
+    add_kf(percent_exit - 0.5, x_exit - 5, y_exit, 0.0, 1) # Still visible right before exit
+    add_kf(percent_exit, x_exit, y_exit, 0.0, 0)
     
-    kf_start_ret = (timings[-1] / total_time) * 100
-    car_keyframes.append(f"  {kf_start_ret:.3f}% {{ transform: translate({points[-1][0]:.1f}px, {points[-1][1]:.1f}px) rotate({rot_ret:.1f}deg); }}")
-    car_keyframes.append(f"  100% {{ transform: translate({points[0][0]:.1f}px, {points[0][1]:.1f}px) rotate({rot_ret:.1f}deg); }}")
+    # Stay invisible until entry starts
+    percent_pause_end = (time_pause_end / total_loop_time) * 100
+    add_kf(percent_pause_end, x_entry, y_entry, 0.0, 0)
+    
+    # Drive in and fade in
+    add_kf(percent_pause_end + 0.5, x_entry + 5, y_entry, 0.0, 1)
+    add_kf(100.0, first_p['x'], first_p['y'], 0.0, 1)
 
     svg_elements = []
     svg_elements.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {svg_width} {svg_height}" width="100%">')
     svg_elements.append('<style>')
     svg_elements.append('  .bg { fill: #050505; }')
-    svg_elements.append(f'  .car {{ animation: drive {total_time:.3f}s linear infinite; }}')
+    svg_elements.append(f'  .car {{ animation: drive {total_loop_time:.3f}s linear infinite; }}')
     svg_elements.append(f'  @keyframes drive {{\n' + '\n'.join(car_keyframes) + '\n  }}')
     svg_elements.append('  .window { animation: flicker 4s infinite alternate; }')
     svg_elements.append('  @keyframes flicker { 0% { opacity: 0.7; } 100% { opacity: 1; } }')
@@ -243,9 +283,9 @@ def generate_svg(levels):
     svg_elements.append(f'<rect class="bg" width="{svg_width}" height="{svg_height}" rx="8" />')
     svg_elements.append(f'<text x="{padding_x}" y="25" class="text">NIGHT SHIFT // DEV</text>')
 
-    # Draw grid
-    for i, p in enumerate(points):
-        x_c, y_c, level = p
+    # Draw the static grid from original cells array (so it's rendered visually normally)
+    for p in cells:
+        x_c, y_c, level = p['x'], p['y'], p['level']
         # Get top-left
         x = x_c - cell_size / 2
         y = y_c - cell_size / 2
@@ -261,11 +301,14 @@ def generate_svg(levels):
         else:
             svg_elements.append(f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" fill="{color}" rx="2" />')
 
-    # Add explosions
-    for i, p in enumerate(points):
-        x_c, y_c, level = p
-        t_start = timings[i]
-        boom_svg = make_boom(x_c, y_c, level, t_start, total_time)
+    # Map explosion timings directly based on when the car visits each point in the snake path
+    timing_map = {p['index']: timings[i] for i, p in enumerate(points)}
+
+    # Add explosions for cells (using original cell list, timing looked up from map)
+    for p in cells:
+        x_c, y_c, level = p['x'], p['y'], p['level']
+        t_start = timing_map.get(p['index'], 0)
+        boom_svg = make_boom(x_c, y_c, level, t_start, total_loop_time)
         svg_elements.append(boom_svg)
 
     # Car definition facing right (0 degrees)
