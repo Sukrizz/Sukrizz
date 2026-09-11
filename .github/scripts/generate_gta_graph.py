@@ -103,7 +103,7 @@ def get_levels_from_data(calendar_data):
     return levels
 
 def make_boom(x, y, level, t_start, total_dur):
-    boom_dur = 0.4
+    boom_dur = 0.25 # Faster explosion for faster car
     
     kf1 = 0.0001
     kf_end = boom_dur / total_dur
@@ -171,7 +171,7 @@ def generate_svg(levels):
     road_height = 14
     start_y = road_y + road_height + 20
 
-    # 1. Precalculate all valid cell coordinates in their logical 2D grid
+    # 1. Precalculate all valid cell coordinates
     cells = []
     for i, level in enumerate(levels):
         week = i // 7
@@ -180,21 +180,37 @@ def generate_svg(levels):
         y = start_y + day * (cell_size + cell_gap) + cell_size / 2
         cells.append({'x': x, 'y': y, 'level': level, 'index': i})
 
-    # 2. Build the serpentine / snake path
-    points = []
-    for row in range(7):
-        if row % 2 == 0:
-            cols = range(weeks)
-        else:
-            cols = range(weeks - 1, -1, -1)
-            
-        for col in cols:
-            index = col * 7 + row
-            if index < len(cells):
-                points.append(cells[index])
+    # 2. Build the dynamic nearest-neighbor path visiting only active contributions
+    active_cells = [c for c in cells if c['level'] > 0]
+    
+    if not active_cells:
+        points = [cells[0]]
+    else:
+        # Start at the top-left-most active cell
+        current = min(active_cells, key=lambda c: c['x'] + c['y'])
+        visited = {current['index']}
+        points = [current]
+        
+        while len(visited) < len(active_cells):
+            best_dist = float('inf')
+            best_cell = None
+            for cell in active_cells:
+                if cell['index'] not in visited:
+                    # Tie break by index to ensure deterministic path
+                    dist = math.hypot(cell['x'] - current['x'], cell['y'] - current['y'])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_cell = cell
+                    elif dist == best_dist and best_cell and cell['index'] < best_cell['index']:
+                        best_cell = cell
+                        
+            current = best_cell
+            visited.add(current['index'])
+            points.append(current)
 
     # 3. Calculate distance and timing
-    time_per_px = 0.3 / (cell_size + cell_gap) # approx 0.3s per cell
+    # Increased speed: 0.08s per cell distance (approx 16px) instead of 0.3s
+    time_per_px = 0.08 / (cell_size + cell_gap) 
     
     timings = [0.0]
     total_time = 0.0
@@ -209,10 +225,21 @@ def generate_svg(levels):
     last_p = points[-1]
     first_p = points[0]
     
-    # Exit animation (continue right if row 6, which is even, so going right)
-    x_exit = last_p['x'] + 60
-    y_exit = last_p['y']
-    dist_exit = 60
+    # Exit animation (continue in the same direction it was moving, or right if single point)
+    dx_exit = 60
+    dy_exit = 0
+    if len(points) > 1:
+        p_prev = points[-2]
+        dx_last = last_p['x'] - p_prev['x']
+        dy_last = last_p['y'] - p_prev['y']
+        mag = math.hypot(dx_last, dy_last)
+        if mag > 0:
+            dx_exit = (dx_last / mag) * 60
+            dy_exit = (dy_last / mag) * 60
+
+    x_exit = last_p['x'] + dx_exit
+    y_exit = last_p['y'] + dy_exit
+    dist_exit = math.hypot(dx_exit, dy_exit)
     total_time += dist_exit * time_per_px
     time_exit = total_time
     
@@ -220,7 +247,7 @@ def generate_svg(levels):
     total_time += 1.0
     time_pause_end = total_time
     
-    # Entry animation (start from left to enter row 0)
+    # Entry animation (start from far left to enter first_p)
     x_entry = first_p['x'] - 60
     y_entry = first_p['y']
     dist_entry = 60
@@ -232,6 +259,7 @@ def generate_svg(levels):
     # Generate CSS keyframes for the car
     car_keyframes = []
     def add_kf(percent, x, y, rot, opacity):
+        # We clamp opacity to 0 or 1
         car_keyframes.append(f"  {percent:.3f}% {{ transform: translate({x:.1f}px, {y:.1f}px) rotate({rot:.1f}deg); opacity: {opacity}; }}")
 
     # Initial frame
@@ -244,22 +272,25 @@ def generate_svg(levels):
         
         dx = p['x'] - p_prev['x']
         dy = p['y'] - p_prev['y']
-        
-        rot = 0
-        if dx > 0: rot = 0
-        elif dx < 0: rot = 180
-        elif dy > 0: rot = 90
+        rot = math.degrees(math.atan2(dy, dx))
         
         # Snap rotation just after leaving the previous cell to face movement direction
         percent_prev = (timings[i-1] / total_loop_time) * 100
         add_kf(percent_prev + 0.001, p_prev['x'], p_prev['y'], rot, 1)
-        
         add_kf(percent, p['x'], p['y'], rot, 1)
+
+    # Determine exit rotation
+    rot_exit = 0.0
+    if len(points) > 1:
+        rot_exit = math.degrees(math.atan2(dy_exit, dx_exit))
 
     # Fade out and drive to exit
     percent_exit = (time_exit / total_loop_time) * 100
-    add_kf(percent_exit - 0.5, x_exit - 5, y_exit, 0.0, 1) # Still visible right before exit
-    add_kf(percent_exit, x_exit, y_exit, 0.0, 0)
+    percent_last = (timings[-1] / total_loop_time) * 100
+    add_kf(percent_last + 0.001, last_p['x'], last_p['y'], rot_exit, 1)
+    
+    add_kf(percent_exit - 0.5, x_exit - (dx_exit*0.05), y_exit - (dy_exit*0.05), rot_exit, 1)
+    add_kf(percent_exit, x_exit, y_exit, rot_exit, 0)
     
     # Stay invisible until entry starts
     percent_pause_end = (time_pause_end / total_loop_time) * 100
@@ -283,7 +314,7 @@ def generate_svg(levels):
     svg_elements.append(f'<rect class="bg" width="{svg_width}" height="{svg_height}" rx="8" />')
     svg_elements.append(f'<text x="{padding_x}" y="25" class="text">NIGHT SHIFT // DEV</text>')
 
-    # Draw the static grid from original cells array (so it's rendered visually normally)
+    # Draw the static grid
     for p in cells:
         x_c, y_c, level = p['x'], p['y'], p['level']
         # Get top-left
@@ -301,11 +332,11 @@ def generate_svg(levels):
         else:
             svg_elements.append(f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" fill="{color}" rx="2" />')
 
-    # Map explosion timings directly based on when the car visits each point in the snake path
+    # Map explosion timings directly based on when the car visits each point in the dynamic path
     timing_map = {p['index']: timings[i] for i, p in enumerate(points)}
 
-    # Add explosions for cells (using original cell list, timing looked up from map)
-    for p in cells:
+    # Add explosions ONLY for active cells visited by the car
+    for p in points:
         x_c, y_c, level = p['x'], p['y'], p['level']
         t_start = timing_map.get(p['index'], 0)
         boom_svg = make_boom(x_c, y_c, level, t_start, total_loop_time)
